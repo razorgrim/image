@@ -1,0 +1,50 @@
+{
+    "2026-05-02": {
+        "completed_tickets": 23,
+        "cancelled_tickets": 18,
+        "total_points_given": 1118,
+        "helpers": {
+            "582945457865621513": 210,
+            "876050868481450024": 90,
+            "696052252863102996": 117,
+            "807522061546160168": 103,
+            "293619479559143425": 74,
+            "701396896366985238": 11,
+            "380322705599102987": 58,
+            "950808185571250236": 102
+        },
+        "requesters": {
+            "582945457865621513": 7,
+            "668301019964375040": 12,
+            "876050868481450024": 77,
+            "696052252863102996": 123,
+            "807522061546160168": 109,
+            "380322705599102987": 3,
+            "950808185571250236": 8,
+            "293619479559143425": 14
+        },
+        "activities": {
+            "UltraDarkon": 3,
+            "UltraNulgath + UltraDrago + UltraDarkon + ChampionDrakath": 1,
+            "ChampionDrakath + UltraDarkon + UltraDrago + UltraNulgath + UltraSpeaker + UltraGramiel + UltraDage": 1,
+            "VoidFlibbi + VoidNightbane + VoidXyfrag": 1,
+            "UltraSpeaker": 3,
+            "UltraSpeaker + UltraGramiel + ChampionDrakath + UltraDarkon + UltraDage + UltraDrago": 1,
+            "UltraSpeaker + UltraGramiel + ChampionDrakath + UltraDage + UltraDarkon + UltraDrago + UltraNulgath": 3,
+            "Hard Farm/Others": 12,
+            "VoidXyfrag + VoidNightbane": 1,
+            "UltraEngineer + UltraEzrajal + UltraWarden + UltraTyndarius": 1,
+            "GrimChallenge": 1,
+            "TempleShrine Left": 1,
+            "UltraDage": 1,
+            "VoidXyfrag": 1,
+            "VoidNightbane + VoidXyfrag": 2,
+            "VoidFlibbi": 1,
+            "ChampionDrakath": 1,
+            "ApexAzalith": 1,
+            "UltraSpeaker + UltraGramiel + ChampionDrakath + UltraDarkon + UltraDage + UltraDrago + UltraNulgath": 2,
+            "UltraGramiel": 1,
+            "UltraSpeaker + UltraGramiel": 2
+        }
+    }
+}
