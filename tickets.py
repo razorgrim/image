@@ -81,6 +81,14 @@ def save_json(path, data):
     with open(path, "w") as file:
         json.dump(data, file, indent=4)
 
+def extract_user_id(text):
+    text = text.strip()
+
+    if text.startswith("<@") and text.endswith(">"):
+        return text.replace("<@", "").replace("!", "").replace(">", "")
+
+    return text
+
 def calculate_member_points(guild, user_id, base_points):
     member = guild.get_member(int(user_id))
 
@@ -296,6 +304,8 @@ class ActivityMultiSelect(discord.ui.Select):
             "max_helpers": max_helpers,
             "room_number": room_number,
             "completed": False,
+            "helpers_locked": False,
+            "helper_custom_points": {},
             "created_at": time.time(),
             "last_activity": time.time(),
             "warned": False
@@ -479,6 +489,8 @@ class HardFarmModal(discord.ui.Modal, title="Hard Farm / Others Ticket"):
             "max_helpers": helpers_needed,
             "room_number": room_number,
             "completed": False,
+            "helpers_locked": False,
+            "helper_custom_points": {},
             "ign": str(self.ign.value),
             "server": str(self.server.value),
             "room_name": str(self.room_name.value),
@@ -563,6 +575,74 @@ class SetPointsModal(discord.ui.Modal, title="Set Manual Ticket Points"):
             ephemeral=True
         )
 
+class SetHelperPointsModal(discord.ui.Modal, title="Set Helper Points"):
+    helper = discord.ui.TextInput(
+        label="Helper Mention or Discord ID",
+        placeholder="Example: @Aiman or 123456789",
+        required=True,
+        max_length=32
+    )
+
+    points = discord.ui.TextInput(
+        label="Points for this helper",
+        placeholder="Example: 2",
+        required=True,
+        max_length=3
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            points = int(self.points.value)
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Points must be a number.",
+                ephemeral=True
+            )
+            return
+
+        if points < 0:
+            await interaction.response.send_message(
+                "❌ Points cannot be negative.",
+                ephemeral=True
+            )
+            return
+
+        helper_id = extract_user_id(self.helper.value)
+
+        active = load_json(ACTIVE_TICKETS_FILE)
+
+        for user_id, data in active.items():
+            if int(data.get("channel_id", 0)) == interaction.channel.id:
+                helper_ids = [str(hid) for hid in data.get("helper_ids", [])]
+
+                if helper_id not in helper_ids:
+                    await interaction.response.send_message(
+                        "❌ That user is not joined as helper in this ticket.",
+                        ephemeral=True
+                    )
+                    return
+
+                if "helper_custom_points" not in data:
+                    data["helper_custom_points"] = {}
+
+                data["helper_custom_points"][helper_id] = points
+                data["last_activity"] = time.time()
+                data["warned"] = False
+
+                active[user_id] = data
+                save_json(ACTIVE_TICKETS_FILE, active)
+
+                await interaction.response.send_message(
+                    f"✅ Custom points set.\n"
+                    f"Helper <@{helper_id}> will receive **{points} point(s)**."
+                )
+                return
+
+        await interaction.response.send_message(
+            "❌ This ticket is not registered.",
+            ephemeral=True
+        )
+
 class TicketControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -607,7 +687,13 @@ class TicketControlView(discord.ui.View):
                 ephemeral=True
             )
             return
-
+        if ticket_data.get("helpers_locked", False):
+            await interaction.response.send_message(
+                "🔐 Helper slots are locked for this ticket.",
+                ephemeral=True
+            )
+            return
+        
         helper_ids = ticket_data.get("helper_ids", [])
         max_helpers = ticket_data.get("max_helpers", 3)
 
@@ -693,7 +779,58 @@ class TicketControlView(discord.ui.View):
             f"🚪 {interaction.user.mention} left as helper.\n"
             f"Helpers: `{len(helper_ids)}/{max_helpers}`"
         )
-        
+
+    @discord.ui.button(
+        label="🔐 Lock / Unlock Helpers",
+        style=discord.ButtonStyle.secondary,
+        custom_id="ticket_toggle_helpers"
+    )
+    async def toggle_helpers(self, interaction: discord.Interaction, button: discord.ui.Button):
+        active = load_json(ACTIVE_TICKETS_FILE)
+
+        ticket_owner_id = None
+        ticket_data = None
+
+        for user_id, data in active.items():
+            if int(data.get("channel_id", 0)) == interaction.channel.id:
+                ticket_owner_id = user_id
+                ticket_data = data
+                break
+
+        if ticket_data is None:
+            await interaction.response.send_message(
+                "❌ This ticket is not registered.",
+                ephemeral=True
+            )
+            return
+
+        is_owner = str(interaction.user.id) == ticket_owner_id
+        is_officer = discord.utils.get(interaction.user.roles, name=OFFICER_ROLE) is not None
+
+        if not is_owner and not is_officer:
+            await interaction.response.send_message(
+                "❌ Only requester or Officer can toggle helper lock.",
+                ephemeral=True
+            )
+            return
+
+        current_state = ticket_data.get("helpers_locked", False)
+        new_state = not current_state
+
+        ticket_data["helpers_locked"] = new_state
+        ticket_data["last_activity"] = time.time()
+        ticket_data["warned"] = False
+
+        active[ticket_owner_id] = ticket_data
+        save_json(ACTIVE_TICKETS_FILE, active)
+
+        if new_state:
+            message = "🔐 Helpers are now **LOCKED**. No one can join."
+        else:
+            message = "🔓 Helpers are now **UNLOCKED**. Others can join."
+
+        await interaction.response.send_message(message)
+
     @discord.ui.button(
             label="Set Points",
             style=discord.ButtonStyle.secondary,
@@ -710,7 +847,25 @@ class TicketControlView(discord.ui.View):
             )
             return
 
-        await interaction.response.send_modal(SetPointsModal())    
+        await interaction.response.send_modal(SetPointsModal())   
+
+    @discord.ui.button(
+        label="Set Helper Points",
+        style=discord.ButtonStyle.secondary,
+        emoji="🎯",
+        custom_id="ticket_set_helper_points"
+    )
+    async def set_helper_points(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_officer = discord.utils.get(interaction.user.roles, name=OFFICER_ROLE) is not None
+
+        if not is_officer:
+            await interaction.response.send_message(
+                "❌ Only Officer can set helper points.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_modal(SetHelperPointsModal())
 
     @discord.ui.button(
         label="Complete Ticket",
@@ -872,13 +1027,17 @@ class TicketControlView(discord.ui.View):
         helper_mentions = []
 
         # 🔹 Helpers
+        helper_custom_points = ticket_data.get("helper_custom_points", {})
+
         for helper_id in helper_ids:
             helper_id_str = str(helper_id)
+
+            helper_base_points = helper_custom_points.get(helper_id_str, points)
 
             final_points = calculate_member_points(
                 interaction.guild,
                 helper_id_str,
-                points
+                helper_base_points
             )
 
             points_data[helper_id_str] = points_data.get(helper_id_str, 0) + final_points
@@ -887,7 +1046,7 @@ class TicketControlView(discord.ui.View):
             helper_name = helper.mention if helper else f"User ID {helper_id}"
 
             helper_mentions.append(f"{helper_name} (+{final_points})")
-
+            
         # 🔹 Requester
         requester_id = ticket_owner_id
 
@@ -1112,6 +1271,24 @@ class Tickets(commands.Cog):
         )
 
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="resetleaderboard",
+        description="Reset all ticket points leaderboard"
+    )
+    async def resetleaderboard(self, interaction: discord.Interaction):
+        if not discord.utils.get(interaction.user.roles, name=OFFICER_ROLE):
+            await interaction.response.send_message(
+                "❌ Only Officer can reset leaderboard.",
+                ephemeral=True
+            )
+            return
+
+        save_json(POINTS_FILE, {})
+
+        await interaction.response.send_message(
+            "🧹 Ticket leaderboard has been reset successfully."
+        )
 
     @app_commands.command(
         name="dailystats",
