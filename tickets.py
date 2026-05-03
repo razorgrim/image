@@ -10,6 +10,8 @@ from datetime import datetime
 INACTIVE_TIMEOUT_SECONDS = 7200  # 2 hours
 WARNING_BEFORE_CLOSE = 1800  # 30 minutes before (in seconds)
 
+CONFIG_FILE = "data/server_config.json"
+
 LOG_CHANNEL_NAME = "ticket-logs"
 
 DAILY_STATS_FILE = "data/daily_stats.json"
@@ -81,6 +83,22 @@ def save_json(path, data):
     with open(path, "w") as file:
         json.dump(data, file, indent=4)
 
+def get_server_config(guild_id):
+    config = load_json(CONFIG_FILE)
+    return config.get(str(guild_id))
+
+
+def user_has_role_id(member, role_id):
+    return any(role.id == role_id for role in member.roles)
+
+def is_officer(member):
+    config = get_server_config(member.guild.id)
+
+    if not config:
+        return False
+
+    return user_has_role_id(member, config["officer_role_id"])
+
 def extract_user_id(text):
     text = text.strip()
 
@@ -91,8 +109,12 @@ def extract_user_id(text):
 
 def calculate_member_points(guild, user_id, base_points):
     member = guild.get_member(int(user_id))
+    config = get_server_config(guild.id)
 
-    if member and discord.utils.get(member.roles, name=BONUS_ROLE):
+    if not config or not member:
+        return base_points
+
+    if user_has_role_id(member, config["bonus_role_id"]):
         return int(base_points * BONUS_MULTIPLIER)
 
     return base_points
@@ -136,7 +158,12 @@ def update_daily_stats(status, activity, points=0, requester_id=None, helper_ids
     save_json(DAILY_STATS_FILE, stats)
 
 async def send_ticket_log(guild, title, description, color=discord.Color.blue()):
-    log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
+    config = get_server_config(guild.id)
+
+    if not config:
+        return
+
+    log_channel = guild.get_channel(config["ticket_log_channel_id"])
 
     if log_channel is None:
         return
@@ -222,7 +249,7 @@ class ActivityMultiSelect(discord.ui.Select):
         # No role restriction for creating ticket
 
         active = load_json(ACTIVE_TICKETS_FILE)
-        user_id = str(interaction.user.id)
+        user_id = f"{interaction.guild.id}:{interaction.user.id}"
 
         if user_id in active:
             await interaction.response.send_message(
@@ -234,13 +261,28 @@ class ActivityMultiSelect(discord.ui.Select):
         selected_activities = self.values
         total_points = sum(ACTIVITIES[self.category][activity] for activity in selected_activities)
 
-        helper_role = discord.utils.get(interaction.guild.roles, name=HELPER_ROLE)
+        config = get_server_config(interaction.guild.id)
+
+        if not config:
+            await interaction.response.send_message(
+                "❌ Ticket system not setup. Admin must run /ticketsetup.",
+                ephemeral=True
+            )
+            return
+
+        helper_role = interaction.guild.get_role(config["helper_role_id"])
         max_helpers = get_max_helpers(self.category)
 
-        ticket_category = discord.utils.get(
-            interaction.guild.categories,
-            name="┊🎟️┊TICKET┊🎟️┊ *testing--phase*"
-        )
+        config = get_server_config(interaction.guild.id)
+
+        if not config:
+            await interaction.response.send_message(
+                "❌ Ticket system not setup.",
+                ephemeral=True
+            )
+            return
+
+        ticket_category = interaction.guild.get_channel(config["ticket_category_id"])
 
         if ticket_category is None:
             await interaction.response.send_message(
@@ -403,18 +445,9 @@ class HardFarmModal(discord.ui.Modal, title="Hard Farm / Others Ticket"):
                 ephemeral=True
             )
             return
-        
-        member_role = discord.utils.get(interaction.guild.roles, name=MEMBER_ROLE)
-
-        if member_role not in interaction.user.roles:
-            await interaction.response.send_message(
-                f"❌ You need the `{MEMBER_ROLE}` role to create a ticket.",
-                ephemeral=True
-            )
-            return
 
         active = load_json(ACTIVE_TICKETS_FILE)
-        user_id = str(interaction.user.id)
+        user_id = f"{interaction.guild.id}:{interaction.user.id}"
 
         if user_id in active:
             await interaction.response.send_message(
@@ -423,12 +456,27 @@ class HardFarmModal(discord.ui.Modal, title="Hard Farm / Others Ticket"):
             )
             return
 
-        helper_role = discord.utils.get(interaction.guild.roles, name=HELPER_ROLE)
+        config = get_server_config(interaction.guild.id)
 
-        ticket_category = discord.utils.get(
-            interaction.guild.categories,
-            name="┊🎟️┊TICKET┊🎟️┊ *testing--phase*"
-        )
+        if not config:
+            await interaction.response.send_message(
+                "❌ Ticket system not setup. Admin must run /ticketsetup.",
+                ephemeral=True
+            )
+            return
+
+        helper_role = interaction.guild.get_role(config["helper_role_id"])
+
+        config = get_server_config(interaction.guild.id)
+
+        if not config:
+            await interaction.response.send_message(
+                "❌ Ticket system not setup.",
+                ephemeral=True
+            )
+            return
+
+        ticket_category = interaction.guild.get_channel(config["ticket_category_id"])
 
         if ticket_category is None:
             await interaction.response.send_message(
@@ -495,6 +543,8 @@ class HardFarmModal(discord.ui.Modal, title="Hard Farm / Others Ticket"):
             "server": str(self.server.value),
             "room_name": str(self.room_name.value),
             "details": str(self.details.value),
+            "created_at": time.time(),
+            "last_activity": time.time(),
             "warned": False
         }
 
@@ -654,9 +704,18 @@ class TicketControlView(discord.ui.View):
         custom_id="ticket_join_helper"
     )
     async def join_helper(self, interaction: discord.Interaction, button: discord.ui.Button):
-        helper_role = discord.utils.get(interaction.guild.roles, name=HELPER_ROLE)
+        config = get_server_config(interaction.guild.id)
+
+        if not config:
+            await interaction.response.send_message(
+                "❌ Ticket system not setup. Admin must run /ticketsetup.",
+                ephemeral=True
+            )
+            return
+
+        helper_role = interaction.guild.get_role(config["helper_role_id"])
         
-        if helper_role not in interaction.user.roles:
+        if not user_has_role_id(interaction.user, config["helper_role_id"]):
             await interaction.response.send_message(
                 f"❌ Only `{HELPER_ROLE}` can claim tickets.",
                 ephemeral=True
@@ -681,7 +740,7 @@ class TicketControlView(discord.ui.View):
             )
             return
 
-        if str(interaction.user.id) == ticket_owner_id:
+        if ticket_owner_id == f"{interaction.guild.id}:{interaction.user.id}":
             await interaction.response.send_message(
                 "❌ You cannot join your own ticket as helper.",
                 ephemeral=True
@@ -804,10 +863,10 @@ class TicketControlView(discord.ui.View):
             )
             return
 
-        is_owner = str(interaction.user.id) == ticket_owner_id
-        is_officer = discord.utils.get(interaction.user.roles, name=OFFICER_ROLE) is not None
+        is_owner = ticket_owner_id == f"{interaction.guild.id}:{interaction.user.id}"
+        officer_check = is_officer(interaction.user)
 
-        if not is_owner and not is_officer:
+        if not is_owner and not officer_check:
             await interaction.response.send_message(
                 "❌ Only requester or Officer can toggle helper lock.",
                 ephemeral=True
@@ -838,9 +897,9 @@ class TicketControlView(discord.ui.View):
             custom_id="ticket_set_points"
         )
     async def set_points(self, interaction: discord.Interaction, button: discord.ui.Button):
-        is_officer = discord.utils.get(interaction.user.roles, name=OFFICER_ROLE) is not None
+        officer_check = is_officer(interaction.user)
 
-        if not is_officer:
+        if not officer_check:
             await interaction.response.send_message(
                 "❌ Only Officer can set manual points.",
                 ephemeral=True
@@ -856,9 +915,9 @@ class TicketControlView(discord.ui.View):
         custom_id="ticket_set_helper_points"
     )
     async def set_helper_points(self, interaction: discord.Interaction, button: discord.ui.Button):
-        is_officer = discord.utils.get(interaction.user.roles, name=OFFICER_ROLE) is not None
+        officer_check = is_officer(interaction.user)
 
-        if not is_officer:
+        if not officer_check:
             await interaction.response.send_message(
                 "❌ Only Officer can set helper points.",
                 ephemeral=True
@@ -892,10 +951,10 @@ class TicketControlView(discord.ui.View):
             )
             return
 
-        is_owner = str(interaction.user.id) == ticket_owner_id
-        is_officer = discord.utils.get(interaction.user.roles, name=OFFICER_ROLE) is not None
+        is_owner = ticket_owner_id == f"{interaction.guild.id}:{interaction.user.id}"
+        officer_check = is_officer(interaction.user)
 
-        if not is_owner and not is_officer:
+        if not is_owner and not officer_check:
             await interaction.response.send_message(
                 "❌ Only the ticket owner or Officer can mark this ticket as complete.",
                 ephemeral=True
@@ -947,10 +1006,10 @@ class TicketControlView(discord.ui.View):
             )
             return
 
-        is_owner = str(interaction.user.id) == ticket_owner_id
-        is_officer = discord.utils.get(interaction.user.roles, name=OFFICER_ROLE) is not None
+        is_owner = ticket_owner_id == f"{interaction.guild.id}:{interaction.user.id}"
+        officer_check = is_officer(interaction.user)
 
-        if not is_owner and not is_officer:
+        if not is_owner and not officer_check:
             await interaction.response.send_message(
                 "❌ Only the ticket requester or Officer can close this ticket.",
                 ephemeral=True
@@ -958,7 +1017,7 @@ class TicketControlView(discord.ui.View):
             return
 
         # Requester can cancel ONLY if ticket is not completed
-        if is_owner and not is_officer and ticket_data.get("completed", False):
+        if is_owner and not officer_check and ticket_data.get("completed", False):
             await interaction.response.send_message(
                 "❌ This ticket is already completed. Only Officer can close and approve points.",
                 ephemeral=True
@@ -990,14 +1049,14 @@ class TicketControlView(discord.ui.View):
                 status="cancelled",
                 activity=ticket_data.get("activity", "Unknown"),
                 points=0,
-                requester_id=ticket_owner_id,
+                requester_id=ticket_owner_id.split(":")[1],
                 helper_ids=[]
             )
             await interaction.channel.delete(reason="Ticket cancelled without completion")
             return
 
         # Completed ticket: Officer only can grant points
-        if not is_officer:
+        if not officer_check:
             await interaction.response.send_message(
                 "❌ Only Officer can close completed tickets and grant points.",
                 ephemeral=True
@@ -1030,13 +1089,13 @@ class TicketControlView(discord.ui.View):
         helper_custom_points = ticket_data.get("helper_custom_points", {})
 
         for helper_id in helper_ids:
-            helper_id_str = str(helper_id)
+            helper_id_str = f"{interaction.guild.id}:{helper_id}"
 
-            helper_base_points = helper_custom_points.get(helper_id_str, points)
+            helper_base_points = helper_custom_points.get(str(helper_id), points)
 
             final_points = calculate_member_points(
                 interaction.guild,
-                helper_id_str,
+                helper_id,
                 helper_base_points
             )
 
@@ -1048,7 +1107,7 @@ class TicketControlView(discord.ui.View):
             helper_mentions.append(f"{helper_name} (+{final_points})")
             
         # 🔹 Requester
-        requester_id = ticket_owner_id
+        requester_id = ticket_owner_id.split(":")[1]
 
         requester_points = calculate_member_points(
             interaction.guild,
@@ -1056,7 +1115,8 @@ class TicketControlView(discord.ui.View):
             points
         )
 
-        points_data[requester_id] = points_data.get(requester_id, 0) + requester_points
+        requester_key = f"{interaction.guild.id}:{requester_id}"
+        points_data[requester_key] = points_data.get(requester_key, 0) + requester_points
 
         requester = interaction.guild.get_member(int(requester_id))
         requester_mention = (
@@ -1081,7 +1141,7 @@ class TicketControlView(discord.ui.View):
             status="completed",
             activity=ticket_data.get("activity", "Unknown"),
             points=points,
-            requester_id=ticket_owner_id,
+            requester_id=requester_id,
             helper_ids=helper_ids
         )
         await send_ticket_log(
@@ -1172,11 +1232,55 @@ class Tickets(commands.Cog):
             save_json(ACTIVE_TICKETS_FILE, active)
 
     @app_commands.command(
+        name="ticketsetup",
+        description="Setup ticket system for this server"
+    )
+    @app_commands.describe(
+        officer_role="Role allowed to manage tickets",
+        helper_role="Role allowed to join as helper",
+        bonus_role="Role that gets extra points",
+        ticket_category="Category where ticket channels will be created",
+        log_channel="Channel for completed ticket logs"
+    )
+    async def ticketsetup(
+        self,
+        interaction: discord.Interaction,
+        officer_role: discord.Role,
+        helper_role: discord.Role,
+        bonus_role: discord.Role,
+        ticket_category: discord.CategoryChannel,
+        log_channel: discord.TextChannel
+    ):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "❌ Only server administrators can setup this bot.",
+                ephemeral=True
+            )
+            return
+
+        config = load_json(CONFIG_FILE)
+        guild_id = str(interaction.guild.id)
+
+        config[guild_id] = {
+            "officer_role_id": officer_role.id,
+            "helper_role_id": helper_role.id,
+            "bonus_role_id": bonus_role.id,
+            "ticket_category_id": ticket_category.id,
+            "ticket_log_channel_id": log_channel.id
+        }
+
+        save_json(CONFIG_FILE, config)
+
+        await interaction.response.send_message(
+            "✅ Ticket system setup completed for this server.",
+            ephemeral=True
+        )
+    @app_commands.command(
         name="ticketpanel",
         description="Send the Ultra Ticket panel"
     )
     async def ticketpanel(self, interaction: discord.Interaction):
-        if not discord.utils.get(interaction.user.roles, name=OFFICER_ROLE):
+        if not is_officer(interaction.user):
             await interaction.response.send_message(
                 "❌ Only Officer can use this command.",
                 ephemeral=True
@@ -1212,7 +1316,8 @@ class Tickets(commands.Cog):
                 "• Ticket inactive for **2 hours** will be auto-closed.\n"
                 "• Auto-closed/cancelled tickets will not give points.\n\n"
                 "⚠️ **Important**\n"
-                "Please only create ticket when you are ready to run."
+                "• Please only create ticket when you are ready to run.\n"
+                "• Helper who leave ticket will not receive points."
             ),
             color=discord.Color.purple()
         )
@@ -1232,7 +1337,7 @@ class Tickets(commands.Cog):
     )
     async def points(self, interaction: discord.Interaction):
         data = load_json(POINTS_FILE)
-        user_id = str(interaction.user.id)
+        user_id = f"{interaction.guild.id}:{interaction.user.id}"
         points = data.get(user_id, 0)
 
         await interaction.response.send_message(
@@ -1254,12 +1359,19 @@ class Tickets(commands.Cog):
             )
             return
 
-        sorted_data = sorted(data.items(), key=lambda item: item[1], reverse=True)
+        guild_prefix = f"{interaction.guild.id}:"
+        server_data = {
+            key: value for key, value in data.items()
+            if key.startswith(guild_prefix)
+        }
+
+        sorted_data = sorted(server_data.items(), key=lambda item: item[1], reverse=True)
         top_10 = sorted_data[:10]
 
         description = ""
 
-        for index, (user_id, points) in enumerate(top_10, start=1):
+        for index, (user_key, points) in enumerate(top_10, start=1):
+            guild_id, user_id = user_key.split(":")
             member = interaction.guild.get_member(int(user_id))
             name = member.mention if member else f"User ID {user_id}"
             description += f"**{index}.** {name} — **{points} points**\n"
@@ -1277,14 +1389,22 @@ class Tickets(commands.Cog):
         description="Reset all ticket points leaderboard"
     )
     async def resetleaderboard(self, interaction: discord.Interaction):
-        if not discord.utils.get(interaction.user.roles, name=OFFICER_ROLE):
+        if not is_officer(interaction.user):
             await interaction.response.send_message(
                 "❌ Only Officer can reset leaderboard.",
                 ephemeral=True
             )
             return
 
-        save_json(POINTS_FILE, {})
+        data = load_json(POINTS_FILE)
+        guild_prefix = f"{interaction.guild.id}:"
+
+        data = {
+            key: value for key, value in data.items()
+            if not key.startswith(guild_prefix)
+        }
+
+        save_json(POINTS_FILE, data)
 
         await interaction.response.send_message(
             "🧹 Ticket leaderboard has been reset successfully."
@@ -1315,10 +1435,13 @@ class Tickets(commands.Cog):
 
         helper_text = ""
         for index, (user_id, points) in enumerate(top_helpers, start=1):
+            if ":" in user_id:
+                user_id = user_id.split(":")[1]
+
             member = interaction.guild.get_member(int(user_id))
             name = member.mention if member else f"User ID {user_id}"
-            helper_text += f"**{index}.** {name} — **{points} points**\n"
 
+            helper_text += f"**{index}.** {name} — **{points} points**\n"
         if not helper_text:
             helper_text = "No helpers recorded today."
 
